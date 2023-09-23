@@ -2,43 +2,81 @@ from pathlib import Path
 import httpx
 from docarray import DocList
 from docarray.documents import TextDoc
+from docarray.index import InMemoryExactNNIndex
+from rich.logging import RichHandler
+import logging
+import timeit
+
+# Set up logging configuration with RichHandler
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True)]
+)
+
+logger = logging.getLogger("rich")
 
 class InputModel(TextDoc):
     pass
 
+class OutputModel(TextDoc):
+    pass
+
+class Client:
+    def __init__(self, host: str = "http://0.0.0.0:8000"):
+        self.host = host            
+
+    async def generate(self, cxts: DocList[InputModel]) -> DocList[OutputModel]:
+        start_time = timeit.default_timer()
+        async with httpx.AsyncClient() as ac:
+            try:
+                logger.debug(f"Initiating request to {self.host}/embeddings/generate")
+                response = await ac.post(f"{self.host}/embeddings/generate", data=cxts.to_json())
+                response.raise_for_status()
+                logger.debug(f"Received response in {timeit.default_timer() - start_time:.2f} seconds")
+                return DocList[OutputModel].from_json(response.content.decode())
+            except httpx.HTTPError as err:
+                logger.error(f"HTTP error occurred: {err}")
+            except Exception as err:
+                logger.error(f"An error occurred: {err}")
+
 async def main():
-    # Get the list of all text files in the project directory and its subdirectories
-    text_files = [file for file in Path('.').rglob('*.txt')]
+    ctxlib = Client()
+    db = InMemoryExactNNIndex[OutputModel]()
+    root_dir = Path('~/github/cpython/Lib').expanduser()
+    py_files = root_dir.rglob('*.py')
     
-    # Load the content of each file and create a list of InputModel instances
-    input_models: List[InputModel] = []
-    for text_file in text_files:
+    logger.debug(f"Commencing iteration through .py files in {root_dir}")
+    total_start_time = timeit.default_timer()
+    for py_file in py_files:
+        loop_start_time = timeit.default_timer()
         try:
-            # Create InputModel instance
-            input_model = InputModel(url=str(text_file))
-            # Load the text content using the .load method and set it to input_model.text
-            with text_file.open() as file:
-                input_model.text = file.read()
-            input_models.append(input_model)
-        except Exception as e:
-            print(f"Error reading {text_file}: {e}")
-    
-    # Prepare the payload as a DocList
-    payload = DocList[InputModel](input_models)
-    
-    # Send a POST request to the API to generate embeddings
-    async with httpx.AsyncClient() as ac:
-        try:
-            response = await ac.post("http://0.0.0.0:8000/embeddings/generate", data=payload.to_json())
-            response.raise_for_status()
+            logger.debug(f"Constructing InputModel for {py_file}")
+            ctx = InputModel(url=str(py_file))
+            ctx.text = ctx.url.load()
+            logger.debug(f"Constructed InputModel for {ctx.url} in {timeit.default_timer() - loop_start_time:.2f} seconds")
             
-            # Parse the response back into a DocList
-            output_docs = DocList[TextDoc].from_json(response.content.decode())
-            print(output_docs[0].embedding)
-        except httpx.HTTPError as err:
-            print(f"HTTP error occurred: {err}")
-        except Exception as err:
-            print(f"An error occurred: {err}")
+            logger.debug(f"Transmitting InputModel to client for embedding generation")
+            r = await ctxlib.generate(DocList[InputModel]([ctx]))
+            logger.debug(f"Embedding: {r[0].embedding[:5]}")
+            db.index(r)
+            logger.debug(f"Indexed {py_file} in {timeit.default_timer() - loop_start_time:.2f} seconds")
+        except Exception as e:
+            logger.error(f"Error processing {py_file}: {e}")
+        finally:
+            logger.debug(f"Total time for processing {py_file}: {timeit.default_timer() - loop_start_time:.2f} seconds")
+    logger.debug(f"Total execution time: {timeit.default_timer() - total_start_time:.2f} seconds")
+    while True:
+        query = InputModel(text=input("Ask something Python related: "))
+        r = await ctxlib.generate(DocList[InputModel]([query]))
+        logger.debug(f"Query: {query.text}")
+        # find similar documents
+        matches, scores = db.find(r[0].embedding, search_field='embedding', limit=5)
+
+        print(f'{matches=}')
+        print(f'{matches.url=}')
+        print(f'{scores=}')
 
 # Run the asynchronous main function
 if __name__ == "__main__":

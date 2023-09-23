@@ -4,11 +4,15 @@ from docarray.documents import TextDoc
 from docarray.typing import AnyEmbedding
 from docarray.base_doc import DocArrayResponse
 from sentence_transformers import SentenceTransformer
+# from InstructorEmbedding import INSTRUCTOR
 from typing import List
 
 api = FastAPI()
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# model = SentenceTransformer('all-MiniLM-L6-v2')
+# model = SentenceTransformer('multi-qa-mpnet-base-dot-v1')
+model = SentenceTransformer('thenlper/gte-large')
+
 
 class InputModel(TextDoc):
     pass
